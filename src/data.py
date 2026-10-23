@@ -1,10 +1,14 @@
 """
 Dados: transforms, divisões treino/validação/teste e DataLoaders.
 """
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import torch
+from PIL import Image
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
 # Média e desvio padrão por canal (R, G, B) das imagens do ImageNet.
@@ -66,6 +70,64 @@ def get_pets_splits(root="data", val_frac=0.2, seed=42, img_size=224):
     train = Subset(trainval_aug, train_idx)
     val = Subset(trainval_eval, val_idx)
     return train, val, test, trainval_aug.classes
+
+
+def subsample_per_class(subset, k, seed):
+    """
+    Sorteia k imagens de cada classe de um Subset (usado na etapa de escassez controlada).
+
+    O sorteio é aninhado: com a mesma seed, as 5 imagens de k=5 estão entre as 10 de k=10,
+    e assim por diante. Isso acontece porque cada classe é embaralhada sempre na mesma ordem
+    e pegamos as k primeiras. Assim, a diferença entre dois valores de k vem só das imagens
+    a mais, e não de um sorteio totalmente diferente.
+    """
+    indices = np.asarray(subset.indices)
+    labels = np.asarray(subset.dataset._labels)[indices]
+    rng = np.random.default_rng(seed)
+    chosen = []
+    for c in np.unique(labels):
+        pos = np.flatnonzero(labels == c)
+        rng.shuffle(pos)
+        chosen.extend(indices[pos[:k]])
+    return Subset(subset.dataset, sorted(chosen))
+
+
+GATINHAS_CLASSES = ("branca", "bolas", "vazio")
+
+
+def load_gatinhas(root="data"):
+    """
+    Tabela do dataset das gatas, com uma linha por foto: sessão, classe, arquivo, hora,
+    condição (dia/noite/ir), caminho do recorte e rótulo numérico.
+
+    Lê os selecao.csv de cada dia (em gatinhas_raw), que já dizem quais fotos entraram e em
+    que condição; as imagens em si são os recortes salvos pelo prepare_gatinhas.py.
+    """
+    root = Path(root)
+    tables = [pd.read_csv(sel).assign(sessao=sel.parent.name)
+              for sel in (root / "gatinhas_raw").glob("*/selecao.csv")]
+    df = pd.concat(tables, ignore_index=True)
+    df["path"] = [root / "gatinhas" / s / c / a for s, c, a in zip(df["sessao"], df["classe"], df["arquivo"])]
+    df["label"] = df["classe"].map(GATINHAS_CLASSES.index)
+    # Ordena as sessões pela data (o nome da pasta é DD-MM-AAAA, que não ordena como texto).
+    data = pd.to_datetime(df["sessao"], format="%d-%m-%Y")
+    return df.assign(data=data).sort_values(["data", "classe", "arquivo"]).drop(columns="data").reset_index(drop=True)
+
+
+class GatinhasDataset(Dataset):
+    """Dataset do PyTorch a partir de (um pedaço da) tabela do load_gatinhas."""
+
+    def __init__(self, table, transform):
+        self.paths = list(table["path"])
+        self.labels = list(table["label"])
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, i):
+        img = Image.open(self.paths[i]).convert("RGB")
+        return self.transform(img), self.labels[i]
 
 
 def make_loaders(train, val, test, batch_size=16, num_workers=2, seed=42):
