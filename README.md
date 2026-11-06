@@ -17,9 +17,9 @@ O problema é de **reconhecimento de indivíduos** (distinguir dois animais da m
 
 ### Hipóteses
 
-- **H1:** Com muitos dados (Pets completo), o full fine-tuning é o melhor regime. Com poucos dados (Pets few-shot e gatas), o linear probing e o kNN passam a ganhar.
+- **H1:** Com muitos dados (Pets completo), o full fine-tuning é o melhor regime. Com poucos dados (Pets few-shot e gatas), o linear probing passa a ganhar.
 - **H2:** No full fine-tuning com k muito pequeno, as CNNs (ResNet18, MobileNetV2) sofrem menos overfitting que o ViT, por causa do viés indutivo convolucional.
-- **H3:** No linear probing e no kNN, o ViT-S/DINOv2 supera as CNNs, porque suas features congeladas já separam bem instâncias parecidas.
+- **H3:** No linear probing, o ViT-S/DINOv2 supera as CNNs, porque suas features congeladas já separam bem instâncias parecidas.
 - **H4 (qualitativa):** Com câmera fixa, parte dos acertos pode vir de atalhos (fundo, posição, iluminação). O Grad-CAM e os mapas de atenção devem revelar isso.
 
 ---
@@ -46,7 +46,7 @@ Sem busca extensa de hiperparâmetros: no máximo uma varredura pequena e igual 
 
 ### Etapa 2: Inovação, escassez controlada (Pets few-shot)
 
-Os mesmos 3 regimes e o kNN, com k ∈ {5, 10, 20, 30} imagens por classe e 3 seeds. Isso mostra em que quantidade de dados cada regime passa a compensar.
+Os mesmos 3 modelos × 3 regimes, com k ∈ {5, 10, 20, 30} imagens por classe sorteadas do treino do baseline (sorteio aninhado: as imagens de k=5 estão dentro das de k=10, e assim por diante) e 3 seeds. Sem validação, porque com 5 imagens por classe não sobra nada para ela: todo treino tem ~1000 passos (k=30 → 15 épocas, como no baseline; k=5 → 84 épocas) e o modelo final é avaliado uma vez no teste completo. Isso mostra como cada regime se comporta à medida que os dados diminuem.
 
 ### Etapa 3: Inovação, as gatas
 
@@ -77,7 +77,6 @@ Em todos os regimes, a última camada é **substituída** por uma nova (37 saíd
 
 | Regime | Camada nova | Resto da rede | Definição por modelo |
 |---|---|---|---|
-| **kNN** (baseline sem treino) | — | congelado | kNN sobre as features congeladas |
 | **Linear probing** | treina | congelado | backbone com `requires_grad = False` |
 | **Partial fine-tuning** | treina | último quarto dos blocos | ResNet18: `layer4` (2 de 8 blocos, 75% dos params) · MobileNetV2: `features[14:]` (4 de 17 blocos + conv final, 76%) · ViT: últimos 3 de 12 blocos + norm (25%) |
 | **Full fine-tuning** | treina | tudo treina | LR baixa (ou LR discriminativa) para não destruir as features pré-treinadas |
@@ -112,8 +111,8 @@ Em todos os regimes, a última camada é **substituída** por uma nova (37 saíd
 ## 4. Resultados esperados
 
 - **Baseline (Pets completo):** CNNs com a receita padrão na faixa de ~90% de acurácia. O DINOv2 em linear probing deve ficar próximo do valor do artigo. Na tabela 3×3, o full fine-tuning deve ser o melhor ou empatar.
-- **Pets few-shot:** curvas acurácia × k com um "ponto de cruzamento" entre regimes. O DINOv2 deve dominar com k pequeno em linear probing e kNN.
-- **Gatinhas:** a ordem dos regimes deve se inverter em relação ao Pets completo, com linear probing e kNN competitivos ou melhores. O Grad-CAM deve indicar se o modelo olha para a gata ou para o fundo.
+- **Pets few-shot:** curvas acurácia × k com um "ponto de cruzamento" entre regimes. O DINOv2 deve dominar com k pequeno em linear probing.
+- **Gatinhas:** a ordem dos regimes deve se inverter em relação ao Pets completo, com linear probing competitivo ou melhor. O Grad-CAM deve indicar se o modelo olha para a gata ou para o fundo.
 - **Custo-benefício:** a MobileNetV2 deve ter o menor tempo de inferência. O trade-off acurácia × latência será mostrado num gráfico.
 
 ### Resultados do baseline (acurácia no teste, %)
@@ -140,6 +139,25 @@ Uma primeira rodada exploratória (ResNet18 com Adam e `lr=1e-3` na rede inteira
 
 Os resultados ficam marcados como `experiment = lr_alta` em `results/summary.csv` e aparecem na seção 3.4 do notebook.
 
+### Resultados da escassez controlada (acurácia no teste, %, média de 3 seeds)
+
+| Backbone | Regime | k=5 | k=10 | k=20 | k=30 | Pets completo |
+|---|---|---|---|---|---|---|
+| ResNet18 | Linear | 80,4 | 85,5 | 87,6 | 88,7 | 89,0 |
+| | Parcial | 68,9 | 79,9 | 84,7 | 87,0 | 89,8 |
+| | Completo | 64,1 | 76,1 | 83,0 | 86,0 | 89,7 |
+| MobileNetV2 | Linear | 80,4 | 86,2 | 88,6 | 89,4 | 90,5 |
+| | Parcial | 73,3 | 82,0 | 86,2 | 88,3 | 90,8 |
+| | Completo | 68,6 | 79,6 | 85,3 | 87,6 | 90,3 |
+| ViT-S DINOv2 | Linear | 85,6 | 90,5 | 92,8 | 93,5 | 94,7 |
+| | Parcial | 83,5 | 90,5 | 92,7 | 93,6 | 95,2 |
+| | Completo | 81,0 | 88,8 | 91,6 | 93,0 | 94,5 |
+
+- **H1 confirmada:** com poucos dados, o linear venceu o ajuste completo em todas as 36 comparações (modelo × k × seed). Com k=5, a diferença é de 16 pontos na ResNet18, 12 na MobileNetV2 e 5 no DINOv2.
+- **H2 invertida:** o DINOv2 foi o que menos perdeu no ajuste completo, e não as CNNs. Mas ele treina com LR 10× menor, então o resultado não separa o efeito da arquitetura do efeito da LR.
+- **H3 confirmada:** no linear, o DINOv2 fica 4 a 5 pontos à frente da melhor CNN em todo k, a mesma distância do Pets completo.
+- Com k=5, todos os regimes chegam a ~99% no treino; o que muda é o teste. O maior desvio entre seeds foi de 2,6 pontos.
+
 ---
 
 ## 5. Estrutura do repositório
@@ -156,11 +174,13 @@ gatinhas-dl/
 │   ├── data.py              # transforms, divisão treino/val/teste, DataLoaders
 │   ├── models.py            # backbone pré-treinado + cabeça nova + regime (o que congela)
 │   ├── train.py             # loop de treino/avaliação, CSV por época, checkpoint, teste
-│   └── run_baseline.py      # roda as 9 combinações no Pets (no terminal)
+│   ├── run_baseline.py      # roda as 9 combinações no Pets (no terminal)
+│   └── fewshot.py           # etapa 2: Pets com k imagens por classe (no terminal)
 ├── notebooks/
-│   └── 01_baseline.ipynb    # dados, modelos e análise dos resultados do baseline
+│   ├── 01_baseline.ipynb    # dados, modelos e análise dos resultados do baseline
+│   └── 02_fewshot.ipynb     # análise da escassez controlada (curvas acurácia × k)
 ├── checkpoints/             # modelos salvos (ignorado pelo git)
-└── results/                 # summary.csv, csv/ (por época), preds/ (teste), figures/
+└── results/                 # summary.csv, csv/ (por época), preds/ (teste), figures/, fewshot/
 ```
 
 ### Ambiente
@@ -187,6 +207,14 @@ caffeinate -i venv/bin/python src/run_baseline.py
 ```
 
 Se for interrompido, é só rodar de novo: os experimentos que já estão em `results/summary.csv` são pulados. Depois, a seção 3 do notebook lê os resultados e gera tabela, curvas e matriz de confusão.
+
+### Rodar a escassez controlada (~13 h)
+
+```bash
+env HF_HUB_OFFLINE=1 caffeinate -i venv/bin/python src/fewshot.py
+```
+
+`HF_HUB_OFFLINE=1` usa os pesos do DINOv2 já baixados, sem consultar o Hugging Face. Também retoma de onde parou; os resultados vão para `results/fewshot/` e são analisados no notebook 02.
 
 ---
 
